@@ -1,5 +1,6 @@
 """
 AlphaZero-style agent combining Transformer + Policy/Value heads with PPO
+Supports multiple encoder architectures: transformer, gated_transformer, lstm, tcn, hybrid
 """
 import torch
 import torch.nn as nn
@@ -11,10 +12,12 @@ try:
     from .transformer_encoder import TransformerEncoder
     from .policy_network import PolicyNetwork, BetaPolicyNetwork
     from .value_network import ValueNetwork
+    from .improved_models import GatedTransformerEncoder, LSTMEncoder, TemporalConvNet, HybridEncoder
 except ImportError:
     from transformer_encoder import TransformerEncoder
     from policy_network import PolicyNetwork, BetaPolicyNetwork
     from value_network import ValueNetwork
+    from improved_models import GatedTransformerEncoder, LSTMEncoder, TemporalConvNet, HybridEncoder
 
 
 @dataclass
@@ -25,11 +28,14 @@ class AgentConfig:
     seq_len: int = 60
     n_assets: int = 4
     
-    # Transformer
-    d_model: int = 128
+    # Transformer (default: Gated Transformer for better performance)
+    d_model: int = 256  # Increased from 128
     n_heads: int = 8
-    n_layers: int = 4
-    d_ff: int = 512
+    n_layers: int = 6   # Increased from 4
+    d_ff: int = 1024    # Increased from 512
+    
+    # Encoder type: "transformer", "gated_transformer", "lstm", "tcn", "hybrid"
+    encoder_type: str = "gated_transformer"
     
     # Policy/Value heads
     hidden_dims: List[int] = None
@@ -48,9 +54,16 @@ class AlphaZeroAgent(nn.Module):
     AlphaZero-style trading agent
     
     Architecture:
-    1. Transformer encoder processes temporal market data
+    1. Encoder (Gated Transformer by default) processes temporal market data
     2. Policy head outputs position allocations
     3. Value head estimates expected return
+    
+    Supported encoders:
+    - gated_transformer: Best for noisy financial data (default)
+    - transformer: Standard transformer
+    - lstm: Bidirectional LSTM
+    - tcn: Temporal Convolutional Network
+    - hybrid: CNN + Transformer combination
     """
     
     def __init__(self, config: Optional[AgentConfig] = None):
@@ -58,28 +71,76 @@ class AlphaZeroAgent(nn.Module):
         
         self.config = config or AgentConfig()
         
-        # Transformer encoder for state representation
-        self.encoder = TransformerEncoder(
-            input_dim=self.config.input_dim,
-            d_model=self.config.d_model,
-            n_heads=self.config.n_heads,
-            n_layers=self.config.n_layers,
-            d_ff=self.config.d_ff,
-            dropout=self.config.dropout,
-            max_seq_len=self.config.seq_len + 10,  # Buffer
-        )
+        # Create encoder based on type
+        encoder_type = self.config.encoder_type.lower()
+        
+        if encoder_type == "gated_transformer":
+            self.encoder = GatedTransformerEncoder(
+                input_dim=self.config.input_dim,
+                d_model=self.config.d_model,
+                n_heads=self.config.n_heads,
+                n_layers=self.config.n_layers,
+                d_ff=self.config.d_ff,
+                dropout=self.config.dropout,
+                max_seq_len=self.config.seq_len + 10,
+            )
+            encoder_output_dim = self.config.d_model
+            
+        elif encoder_type == "transformer":
+            self.encoder = TransformerEncoder(
+                input_dim=self.config.input_dim,
+                d_model=self.config.d_model,
+                n_heads=self.config.n_heads,
+                n_layers=self.config.n_layers,
+                d_ff=self.config.d_ff,
+                dropout=self.config.dropout,
+                max_seq_len=self.config.seq_len + 10,
+            )
+            encoder_output_dim = self.config.d_model
+            
+        elif encoder_type == "lstm":
+            self.encoder = LSTMEncoder(
+                input_dim=self.config.input_dim,
+                hidden_dim=self.config.d_model,
+                n_layers=min(self.config.n_layers, 4),
+                dropout=self.config.dropout,
+            )
+            encoder_output_dim = self.encoder.output_dim
+            
+        elif encoder_type == "tcn":
+            self.encoder = TemporalConvNet(
+                input_dim=self.config.input_dim,
+                hidden_dims=[128, 256, 256, self.config.d_model],
+                kernel_size=3,
+                dropout=self.config.dropout,
+            )
+            encoder_output_dim = self.encoder.output_dim
+            
+        elif encoder_type == "hybrid":
+            self.encoder = HybridEncoder(
+                input_dim=self.config.input_dim,
+                d_model=self.config.d_model,
+                n_heads=self.config.n_heads,
+                n_layers=min(self.config.n_layers, 4),
+                dropout=self.config.dropout,
+            )
+            encoder_output_dim = self.encoder.output_dim
+            
+        else:
+            raise ValueError(f"Unknown encoder type: {encoder_type}. "
+                           f"Choose from: gated_transformer, transformer, lstm, tcn, hybrid")
         
         # Policy network
         if self.config.use_beta_policy:
             self.policy = BetaPolicyNetwork(
-                input_dim=self.config.d_model,
+                input_dim=encoder_output_dim,
                 n_assets=self.config.n_assets,
                 hidden_dims=self.config.hidden_dims,
                 dropout=self.config.dropout,
             )
         else:
             self.policy = PolicyNetwork(
-                input_dim=self.config.d_model,
+                input_dim=encoder_output_dim,
                 n_assets=self.config.n_assets,
                 hidden_dims=self.config.hidden_dims,
                 dropout=self.config.dropout,
@@ -87,7 +148,7 @@ class AlphaZeroAgent(nn.Module):
         
         # Value network
         self.value = ValueNetwork(
-            input_dim=self.config.d_model,
+            input_dim=encoder_output_dim,
             hidden_dims=self.config.hidden_dims,
             dropout=self.config.dropout,
         )
@@ -223,8 +284,14 @@ class PPOTrainer:
         Returns:
             Tuple of (advantages, returns)
         """
+        # Move all tensors to CPU for computation (avoid device mismatch)
+        rewards = rewards.cpu()
+        values = values.cpu()
+        dones = dones.cpu()
+        next_value = next_value.cpu() if isinstance(next_value, torch.Tensor) else torch.tensor(next_value)
+        
         n_steps = len(rewards)
-        advantages = torch.zeros(n_steps, device=self.device)
+        advantages = torch.zeros(n_steps)
         last_gae = 0
         
         for t in reversed(range(n_steps)):

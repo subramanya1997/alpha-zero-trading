@@ -18,13 +18,17 @@ class EnvConfig:
     """Environment configuration"""
     initial_capital: float = 10_000.0
     max_leverage: float = 10.0
-    min_leverage: float = 5.0
+    min_leverage: float = 1.0  # Start with lower leverage
     max_drawdown: float = 0.05  # 5% max drawdown
     max_position_size: float = 0.50  # 50% max per position
     transaction_cost: float = 0.001  # 0.1% per trade
     maintenance_margin: float = 0.25
     lookback_window: int = 60
     symbols: List[str] = None
+    
+    # Curriculum/training settings
+    warmup_steps: int = 50  # Steps before termination is enforced
+    allow_early_termination: bool = True
     
     def __post_init__(self):
         if self.symbols is None:
@@ -268,6 +272,14 @@ class TradingEnv(gym.Env):
     
     def _check_termination(self) -> bool:
         """Check if episode should terminate due to risk constraints"""
+        # During warmup period, don't terminate (let agent explore)
+        episode_length = len(self.episode_returns)
+        if not self.config.allow_early_termination or episode_length < self.config.warmup_steps:
+            # Still check for catastrophic failure during warmup
+            if self.portfolio.total_value <= self.config.initial_capital * 0.3:
+                return True
+            return False
+        
         # Max drawdown exceeded
         if self.portfolio.drawdown <= -self.config.max_drawdown:
             return True
@@ -287,46 +299,75 @@ class TradingEnv(gym.Env):
         Calculate reward based on risk-adjusted returns
         
         Reward components:
-        1. Daily return (scaled)
-        2. Drawdown penalty
+        1. Risk-adjusted daily return (scaled by volatility)
+        2. Drawdown penalty (progressive)
         3. Transaction cost penalty
-        4. Sharpe ratio bonus
+        4. Rolling Sharpe bonus (main learning signal)
+        5. Survival bonus
         """
         daily_return = self.portfolio.daily_return
         drawdown = self.portfolio.drawdown
+        episode_len = len(self.episode_returns)
         
-        # Base reward: daily return
-        reward = daily_return * 100  # Scale up for learning
+        reward = 0.0
         
-        # Drawdown penalty (exponentially increasing)
-        if drawdown < 0:
-            drawdown_penalty = (abs(drawdown) / self.config.max_drawdown) ** 2 * 10
-            reward -= drawdown_penalty
+        # 1. Survival bonus (encourage longer episodes)
+        reward += 0.1
         
-        # Heavy penalty if approaching max drawdown
-        if drawdown <= -self.config.max_drawdown * 0.8:
-            reward -= 5.0
+        # 2. Risk-adjusted return
+        if episode_len >= 5:
+            recent_returns = np.array(self.episode_returns[-5:])
+            vol = np.std(recent_returns) + 1e-6
+            risk_adjusted = daily_return / vol
+            reward += np.clip(risk_adjusted * 5, -2, 2)  # Scaled and clipped
+        else:
+            reward += daily_return * 50  # Early stage: raw return signal
         
-        # Transaction cost penalty
-        cost_penalty = (transaction_cost / self.config.initial_capital) * 100
-        reward -= cost_penalty
-        
-        # Sharpe ratio bonus (if enough history)
-        if len(self.episode_returns) >= 20:
+        # 3. Rolling Sharpe bonus (main objective)
+        if episode_len >= 20:
             returns = np.array(self.episode_returns[-20:])
             sharpe = self._calculate_rolling_sharpe(returns)
-            if sharpe > 0:
-                reward += sharpe * 0.5  # Small bonus for good risk-adjusted returns
+            # Sharpe bonus: positive sharpe is rewarded, negative is penalized
+            reward += sharpe * 2.0
         
-        # Terminal rewards
+        # 4. Drawdown penalty (progressive, not binary)
+        if drawdown < 0:
+            dd_ratio = abs(drawdown) / self.config.max_drawdown
+            if dd_ratio < 0.5:
+                # Mild penalty for small drawdowns
+                drawdown_penalty = dd_ratio * 2
+            elif dd_ratio < 0.8:
+                # Moderate penalty
+                drawdown_penalty = dd_ratio ** 2 * 5
+            else:
+                # Severe penalty near max drawdown
+                drawdown_penalty = dd_ratio ** 3 * 10
+            reward -= drawdown_penalty
+        
+        # 5. Transaction cost penalty (scaled down)
+        cost_penalty = (transaction_cost / self.config.initial_capital) * 20
+        reward -= cost_penalty
+        
+        # 6. Terminal rewards/penalties
         if self.done:
-            # Penalize heavily for hitting max drawdown
             if drawdown <= -self.config.max_drawdown:
-                reward -= 50.0
+                # Graduated penalty based on episode length
+                reward -= max(10, 50 - episode_len * 0.5)
             elif self.portfolio.check_margin_call():
-                reward -= 100.0
+                reward -= 30.0
         
-        return float(reward)
+        # 7. End of episode bonus (survived until data end)
+        if self.truncated and not self.done:
+            final_return = self.portfolio.cumulative_return
+            if final_return > 0:
+                reward += 20 * final_return  # Bonus for positive returns
+            # Bonus based on final Sharpe
+            if episode_len >= 20:
+                full_sharpe = self._calculate_rolling_sharpe(np.array(self.episode_returns))
+                if full_sharpe > 0:
+                    reward += full_sharpe * 10
+        
+        return float(np.clip(reward, -100, 100))
     
     def _calculate_rolling_sharpe(self, returns: np.ndarray) -> float:
         """Calculate rolling Sharpe ratio"""

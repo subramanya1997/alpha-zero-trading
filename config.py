@@ -35,11 +35,14 @@ class TradingConfig:
 @dataclass
 class ModelConfig:
     """Model architecture configuration"""
-    # Transformer encoder
-    d_model: int = 128  # Model dimension
+    # Encoder type: "gated_transformer", "transformer", "lstm", "tcn", "hybrid"
+    encoder_type: str = "gated_transformer"
+    
+    # Transformer/Encoder settings (optimized for Gated Transformer)
+    d_model: int = 256  # Model dimension (increased from 128)
     n_heads: int = 8  # Number of attention heads
-    n_layers: int = 4  # Number of transformer layers
-    d_ff: int = 512  # Feed-forward dimension
+    n_layers: int = 6  # Number of transformer layers (increased from 4)
+    d_ff: int = 1024  # Feed-forward dimension (increased from 512)
     dropout: float = 0.1
     
     # Policy/Value heads
@@ -53,7 +56,7 @@ class ModelConfig:
 class TrainingConfig:
     """Training configuration"""
     # PPO hyperparameters
-    learning_rate: float = 1e-4
+    learning_rate: float = 3e-4  # Increased for faster convergence
     gamma: float = 0.99  # Discount factor
     gae_lambda: float = 0.95  # GAE lambda
     clip_epsilon: float = 0.2  # PPO clip
@@ -68,8 +71,9 @@ class TrainingConfig:
     total_timesteps: int = 1_000_000
     
     # Checkpointing
-    save_freq: int = 10_000
-    eval_freq: int = 5_000
+    save_freq: int = 50_000
+    eval_freq: int = 10_000
+    log_freq: int = 1_000
     
     # Device
     device: str = "mps"  # Use MPS for Apple Silicon, change to "cuda" for NVIDIA
