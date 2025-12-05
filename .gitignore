@@ -1,0 +1,36 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data cache (will be downloaded)
+data/cache/
+
+# Checkpoints (too large for git)
+checkpoints/
+*.pt
+
+# Logs
+logs/
+
+# Results
+results/
+
+# Wandb
+wandb/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+checkpoints/
