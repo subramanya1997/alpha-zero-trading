@@ -5,14 +5,21 @@ Enhanced with comprehensive wandb logging
 """
 import argparse
 import sys
+import os
 from pathlib import Path
 from datetime import datetime
+
+# Fix matplotlib backend BEFORE importing (fixes Colab/Jupyter issues)
+if os.environ.get('MPLBACKEND', '').startswith('module://'):
+    os.environ['MPLBACKEND'] = 'Agg'
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 import numpy as np
 import pandas as pd
 import torch
 import wandb
-import matplotlib.pyplot as plt
 
 from config import Config, DEFAULT_CONFIG
 from data.data_loader import DataLoader

@@ -4,15 +4,22 @@ Evaluation script for trained AlphaZero Trading Agent
 Enhanced with comprehensive wandb logging and visualizations
 """
 import argparse
+import os
 from pathlib import Path
 from datetime import datetime
+
+# Fix matplotlib backend BEFORE importing (fixes Colab/Jupyter issues)
+if os.environ.get('MPLBACKEND', '').startswith('module://'):
+    os.environ['MPLBACKEND'] = 'Agg'
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 import numpy as np
 import torch
 import wandb
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 from config import DEFAULT_CONFIG
 from data.data_loader import DataLoader

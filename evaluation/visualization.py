@@ -2,14 +2,21 @@
 Visualization module for backtest results
 """
 import sys
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
-import pandas as pd
+# Fix matplotlib backend BEFORE importing (fixes Colab/Jupyter issues)
+if os.environ.get('MPLBACKEND', '').startswith('module://'):
+    os.environ['MPLBACKEND'] = 'Agg'
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import seaborn as sns
+
+import numpy as np
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
